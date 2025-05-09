@@ -9,6 +9,7 @@ use bevy::{
     reflect::TypePath,
     render::render_resource::{AsBindGroup, ShaderRef, ShaderType},
 };
+use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 
 /// This example uses a shader source file from the assets subdirectory
 const PREPASS_SHADER_ASSET_PATH: &str = "shaders/show_prepass.wgsl";
@@ -24,7 +25,7 @@ fn main() {
                 // prepass_enabled: false,
                 ..default()
             }),
-            MaterialPlugin::<CustomMaterial>::default(),
+            MaterialPlugin::<ExtendedMaterial<StandardMaterial, CustomMaterial>>::default(),
             MaterialPlugin::<PrepassOutputMaterial> {
                 // This material only needs to read the prepass textures,
                 // but the meshes using it should not contribute to the prepass render, so we can disable it.
@@ -33,7 +34,7 @@ fn main() {
             },
         ))
         .add_systems(Startup, setup)
-        .add_systems(Update, (rotate, toggle_prepass_view))
+        .add_systems(Update, (rotate, change_opacity, toggle_prepass_view))
         .run();
 }
 
@@ -41,9 +42,9 @@ fn main() {
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<CustomMaterial>>,
     mut std_materials: ResMut<Assets<StandardMaterial>>,
     mut depth_materials: ResMut<Assets<PrepassOutputMaterial>>,
+    mut custom_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, CustomMaterial>>>,
     asset_server: Res<AssetServer>,
 ) {
     // camera
@@ -82,36 +83,56 @@ fn setup(
     // Opaque cube
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::default())),
-        MeshMaterial3d(materials.add(CustomMaterial {
-            color: LinearRgba::WHITE,
-            color_texture: Some(asset_server.load("branding/icon.png")),
-            alpha_mode: AlphaMode::Opaque,
+        MeshMaterial3d(custom_materials.add(ExtendedMaterial::<StandardMaterial, CustomMaterial> {
+            base: StandardMaterial {
+                base_color: Color::WHITE,
+                alpha_mode: AlphaMode::Opaque,
+                ..default()
+            },
+            extension: CustomMaterial {
+                opacity: 1.0,
+            }
         })),
         Transform::from_xyz(-1.0, 0.5, 0.0),
         Rotates,
+        ChangesOpacity
     ));
 
     // Cube with alpha mask
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::default())),
-        MeshMaterial3d(std_materials.add(StandardMaterial {
-            alpha_mode: AlphaMode::Mask(1.0),
-            base_color_texture: Some(asset_server.load("branding/icon.png")),
-            ..default()
+        MeshMaterial3d(custom_materials.add(ExtendedMaterial::<StandardMaterial, CustomMaterial> {
+            base: StandardMaterial {
+                base_color: Color::WHITE,
+                alpha_mode: AlphaMode::Mask(1.0),
+                ..default()
+            },
+            extension: CustomMaterial {
+                opacity: 1.0,
+            }
         })),
         Transform::from_xyz(0.0, 0.5, 0.0),
+        Rotates,
+        ChangesOpacity
     ));
 
     // Cube with alpha blending.
     // Transparent materials are ignored by the prepass
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::default())),
-        MeshMaterial3d(materials.add(CustomMaterial {
-            color: LinearRgba::WHITE,
-            color_texture: Some(asset_server.load("branding/icon.png")),
-            alpha_mode: AlphaMode::Blend,
+        MeshMaterial3d(custom_materials.add(ExtendedMaterial::<StandardMaterial, CustomMaterial> {
+            base: StandardMaterial {
+                base_color: Color::WHITE,
+                alpha_mode: AlphaMode::Blend,
+                ..default()
+            },
+            extension: CustomMaterial {
+                opacity: 1.0,
+            }
         })),
         Transform::from_xyz(1.0, 0.5, 0.0),
+        Rotates,
+        ChangesOpacity
     ));
 
     // light
@@ -142,41 +163,49 @@ fn setup(
 }
 
 // This is the struct that will be passed to your shader
-#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
-struct CustomMaterial {
-    #[uniform(0)]
-    color: LinearRgba,
-    #[texture(1)]
-    #[sampler(2)]
-    color_texture: Option<Handle<Image>>,
-    alpha_mode: AlphaMode,
+#[derive(Asset, AsBindGroup, TypePath, Debug, Clone)]
+pub struct CustomMaterial {
+    // Start at a high binding number to ensure bindings don't conflict
+    // with the base material
+
+    /// 1.0 = fully visible, 0.0 = fully transparent.
+    #[uniform(100)]
+    pub opacity: f32,
 }
 
-/// Not shown in this example, but if you need to specialize your material, the specialize
-/// function will also be used by the prepass
-impl Material for CustomMaterial {
+impl MaterialExtension for CustomMaterial {
     fn fragment_shader() -> ShaderRef {
-        MATERIAL_SHADER_ASSET_PATH.into()
+        "shaders/demo_custom_material.wgsl".into()
     }
 
-    fn alpha_mode(&self) -> AlphaMode {
-        self.alpha_mode
+    fn prepass_fragment_shader() -> ShaderRef {
+        "shaders/demo_custom_material_prepass.wgsl".into()
     }
-
-    // You can override the default shaders used in the prepass if your material does
-    // anything not supported by the default prepass
-    // fn prepass_fragment_shader() -> ShaderRef {
-    //     "shaders/custom_material.wgsl".into()
-    // }
 }
 
 #[derive(Component)]
 struct Rotates;
 
+#[derive(Component)]
+struct ChangesOpacity;
+
 fn rotate(mut q: Query<&mut Transform, With<Rotates>>, time: Res<Time>) {
     for mut t in q.iter_mut() {
         let rot = (ops::sin(time.elapsed_secs()) * 0.5 + 0.5) * std::f32::consts::PI * 2.0;
         t.rotation = Quat::from_rotation_z(rot);
+    }
+}
+
+fn change_opacity(
+    mesh_material_query: Query<&MeshMaterial3d<ExtendedMaterial<StandardMaterial, CustomMaterial>>>,
+    mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, CustomMaterial>>>,
+    time: Res<Time>
+) {
+    let opacity = ops::sin(time.elapsed_secs()) * 0.5 + 0.5;
+    for material in mesh_material_query.iter() {
+        if let Some(mut material) = materials.get_mut(material) {
+            material.extension.opacity = opacity;
+        }
     }
 }
 
