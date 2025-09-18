@@ -1165,7 +1165,7 @@ pub fn animate_targets(
                             continue;
                         };
 
-                        if !active_animation.paused {
+                        //if !active_animation.paused {
                             // Trigger all animation events that occurred this tick, if any.
                             if let Some(triggered_events) = TriggeredEvents::from_animation(
                                 AnimationEventTarget::Node(target_id),
@@ -1186,7 +1186,7 @@ pub fn animate_targets(
                                     }
                                 });
                             }
-                        }
+                        //}
 
                         let Some(curves) = clip.curves_for_target(target_id) else {
                             continue;

@@ -13,6 +13,15 @@ use rand_chacha::ChaCha8Rng;
 
 const FOX_PATH: &str = "models/animated/Fox.glb";
 
+// The FPS of the _animation_ defined in the GLB file. (This is not the same as this example's FPS.)
+const ANIMATION_FPS: u32 = 24;
+
+// The number of frames in the running animation defined in the GLB file.
+const ANIMATION_FRAMES: u32 = 28;
+
+// The length of time (in seconds) that the running animation lasts.
+const ANIMATION_LENGTH_SECONDS: f32 = ANIMATION_FRAMES as f32 / ANIMATION_FPS as f32;
+
 fn main() {
     App::new()
         .insert_resource(AmbientLight {
@@ -26,6 +35,7 @@ fn main() {
         .add_systems(Startup, setup)
         .add_systems(Update, setup_scene_once_loaded)
         .add_systems(Update, simulate_particles)
+        .add_systems(Update, update_animation_manually)
         .add_observer(observe_on_step)
         .run();
 }
@@ -137,6 +147,31 @@ fn setup(
     commands.insert_resource(SeededRng(seeded_rng));
 }
 
+fn update_animation_manually(
+    mut players: Query<&mut AnimationPlayer>,
+    time: Res<Time>,
+) {
+    for mut player in &mut players {
+        if let Some((_, animation)) = player.playing_animations_mut().next() {
+            // Calculate speed multiplier using sine wave. This dynamically speeds up or slows down
+            // the animation.
+            let speed_multiplier = 1.55 + 1.45 * time.elapsed_secs().sin(); // Maps [-1,1] to [0.1,3.0]
+            let new_seek_time = animation.seek_time() + time.delta_secs() * speed_multiplier;
+            
+            // "seek_to" is supposed to trigger any events that occur between the previous and
+            // current animation frames. "set_seek_time" does not. Because the animation is looping,
+            // when we jump from the end to the start of the animation, we want to avoid triggering
+            // animations between the "end" and "start" times. (Side note: using seek_to in both
+            // cases also causes a panic in the bevy animation library code.)
+            if new_seek_time > ANIMATION_LENGTH_SECONDS {
+                animation.set_seek_time(new_seek_time % ANIMATION_LENGTH_SECONDS);
+            } else {
+                animation.seek_to(new_seek_time);
+            }
+        }
+    }
+}
+
 // An `AnimationPlayer` is automatically added to the scene when it's ready.
 // When the player is added, start the animation.
 fn setup_scene_once_loaded(
@@ -173,23 +208,15 @@ fn setup_scene_once_loaded(
         running_animation.add_event_to_target(feet.front_right, 0.5, Step);
         running_animation.add_event_to_target(feet.back_left, 0.0, Step);
         running_animation.add_event_to_target(feet.back_right, 0.125, Step);
-
-        // Start the animation
-
-        let mut transitions = AnimationTransitions::new();
-
-        // Make sure to start the animation via the `AnimationTransitions`
-        // component. The `AnimationTransitions` component wants to manage all
-        // the animations and will get confused if the animations are started
-        // directly via the `AnimationPlayer`.
-        transitions
-            .play(&mut player, animations.index, Duration::ZERO)
-            .repeat();
+        
+        // In order to perform animation manually, we need to first play the animation (to set the
+        // animation as active) and then immediately pause it (to prevent the animation from
+        // progressing automatically over time.)
+        player.play(animations.index).pause();
 
         commands
             .entity(entity)
-            .insert(AnimationGraphHandle(animations.graph_handle.clone()))
-            .insert(transitions);
+            .insert(AnimationGraphHandle(animations.graph_handle.clone()));
     }
 }
 
